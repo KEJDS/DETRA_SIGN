@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign Language Detection</title>
+
+  <!-- MediaPipe Libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+
+  <style>
+   body {
+    background: #111;
+    color: #00ffcc;
+    font-family: Arial, sans-serif;
+    text-align: center;
+    padding: 10px;
+    margin: 0;
+  }
+
+  h1 {
+    font-size: 1.5rem;
+    margin-bottom: 10px;
+  }
+
+  video, canvas {
+    border: 3px solid #00ffcc;
+    border-radius: 10px;
+    width: 100%;
+    max-width: 640px;
+    height: auto;
+    display: block;
+    margin: 0 auto;
+  }
+
+  #prediction {
+    margin-top: 15px;
+    font-size: 1.5rem;
+    font-weight: bold;
+    word-wrap: break-word;
+  }
+
+  @media (max-width: 480px) {
+    h1 {
+      font-size: 1.2rem;
+    }
+
+    #prediction {
+      font-size: 1.2rem;
+    }
+    }
+  </style>
+</head>
+<body>
+  <video id="video" width="640" height="480" autoplay></video>
+  <canvas id="canvas" width="640" height="480"></canvas>
+  <div id="prediction">Show a sign...</div>
+
+  <script>
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const prediction = document.getElementById("prediction");
+
+    // MediaPipe Hands
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence: 0.7,
+    });
+
+    const faceMesh = new FaceMesh({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+    });
+    faceMesh.setOptions({
+      maxNumFaces: 1,
+      refineLandmarks: false,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.6,
+    });
+
+    let faceLandmarks = null;
+
+    faceMesh.onResults((results) => {
+      faceLandmarks = results.multiFaceLandmarks ? results.multiFaceLandmarks[0] : null;
+    });
+
+    const camera = new Camera(video, {
+      onFrame: async () => {
+        await faceMesh.send({ image: video });
+        await hands.send({ image: video });
+      },
+      width: 640,
+      height: 480,
+    });
+
+    hands.onResults((results) => {
+      ctx.save();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const landmarks = results.multiHandLandmarks[0];
+        drawConnectors(ctx, landmarks, HAND_CONNECTIONS, { color: "#00FF00", lineWidth: 3 });
+        drawLandmarks(ctx, landmarks, { color: "#FF0000", lineWidth: 2 });
+
+        const detectedSign = detectSign(landmarks);
+        prediction.textContent = detectedSign;
+      } else {
+        prediction.textContent = "Show a sign...";
+      }
+      ctx.restore();
+    });
+
+    function distance(a, b) {
+      return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+    }
+
+    function isFingerFolded(tip, base) {
+      return tip.y > base.y; // folded if tip is below base
+    }
+
+    // Sign detection
+    function detectSign(lm) {
+      const thumb = lm[4];
+      const index = lm[8];
+      const middle = lm[12];
+      const ring = lm[16];
+      const pinky = lm[20];
+      const wrist = lm[0];
+
+      const indexFolded = isFingerFolded(index, lm[5]);
+      const middleFolded = isFingerFolded(middle, lm[9]);
+      const ringFolded = isFingerFolded(ring, lm[13]);
+      const pinkyFolded = isFingerFolded(pinky, lm[17]);
+
+      // Gesture logic
+      const openPalm =
+        !indexFolded && !middleFolded && !ringFolded && !pinkyFolded &&
+        distance(thumb, pinky) > 0.2;
+
+      const fist =
+        indexFolded && middleFolded && ringFolded && pinkyFolded;
+
+      const thumbUp =
+        !indexFolded && !middleFolded && !ringFolded && !pinkyFolded &&
+        thumb.y < index.y && distance(index, wrist) < 0.25;
+
+      const thumbDown =
+        thumb.y > index.y && distance(index, wrist) < 0.25;
+
+      const iLoveYou =
+        !indexFolded && middleFolded && ringFolded && !pinkyFolded &&
+        distance(thumb, index) > 0.1 && distance(thumb, pinky) > 0.1;
+
+      let nearFace = false;
+      if (faceLandmarks) {
+        const chin = faceLandmarks[152];
+        const nose = faceLandmarks[1];
+        const palmCenter = lm[9];
+        const distFacePalm = distance(palmCenter, chin);
+        if (distFacePalm < 0.2 || distance(palmCenter, nose) < 0.2) {
+          nearFace = true;
+        }
+      }
+
+      if (openPalm) return "👋 Hello";
+      if (fist || thumbUp) return "👍 Agree";
+      if (thumbDown) return "👎 Disagree";
+      if (iLoveYou) return "🤟 I Love You";
+      if (nearFace) return "🙏 Thank You";
+      return "Show a sign...";
+    }
+
+    camera.start();
+  </script>
+</body>
+</html>
